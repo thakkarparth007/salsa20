@@ -15,7 +15,7 @@ int main(int argc, char *argv[])
                  "         Use this program as a demo ONLY.\n"
                  "\n"
                  "Usage:\n"
-                 "salsa20 <salsa/hsalsa/xsalsa> <16-character key> <nonce> <rounds>\n";
+                 "salsa20 <salsa/xsalsa> <16-character key> <nonce> <rounds>\n";
 
   if (!(argc == 5 && strlen(argv[2]) == 16)) {
     puts(usage);
@@ -39,6 +39,14 @@ int main(int argc, char *argv[])
     }
 
     crypt_function = s20_crypt;
+  }
+  if (!strcmp(argv[1], "xsalsa")) {
+    if (strlen(argv[3]) != 24) {
+      puts("nonce must be 24 character long (192 bits) for XSalsa20");
+      return 1;
+    }
+
+    crypt_function = xs20_crypt;
   }
   // conditions for other functions
   else {

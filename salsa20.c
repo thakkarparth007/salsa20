@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "salsa20.h"
 
 // Implements DJB's definition of '<<<'
@@ -57,7 +58,7 @@ static void s20_rev_littleendian(uint8_t *b, uint32_t w)
 }
 
 // The core function of Salsa20
-static void s20_hash(uint8_t seq[static 64], int rounds)
+static void s20_hash(uint8_t seq[static 64], uint8_t out[static 64], int rounds)
 {
   int i;
   int halfRounds = rounds/2;
@@ -75,9 +76,38 @@ static void s20_hash(uint8_t seq[static 64], int rounds)
 
   for (i = 0; i < 16; ++i) {
     z[i] += x[i];
-    s20_rev_littleendian(seq + (4 * i), z[i]);
+    s20_rev_littleendian(out + (4 * i), z[i]);
   }
 }
+
+
+// The core function of HSalsa20
+static void hs20_hash(uint8_t seq[static 64], uint8_t out[static 32], int rounds)
+{
+  int i;
+  int halfRounds = rounds/2;
+  uint32_t z[16];
+
+  // Create two copies of the state in little-endian format
+  // First copy is hashed together
+  // Second copy is added to first, word-by-word
+  for (i = 0; i < 16; ++i)
+    z[i] = s20_littleendian(seq + (4 * i));
+
+  for (i = 0; i < halfRounds; ++i)
+    s20_doubleround(z);
+
+  // store the output in out
+  s20_rev_littleendian(out,    z[0]);
+  s20_rev_littleendian(out+4,  z[5]);
+  s20_rev_littleendian(out+8,  z[10]);
+  s20_rev_littleendian(out+12, z[15]);
+  s20_rev_littleendian(out+16, z[6]);
+  s20_rev_littleendian(out+20, z[7]);
+  s20_rev_littleendian(out+24, z[8]);
+  s20_rev_littleendian(out+28, z[9]);
+}
+
 
 // The 16-byte (128-bit) key expansion function
 static void s20_expand16(uint8_t *k,
@@ -177,7 +207,7 @@ enum s20_status_t s20_crypt(uint8_t *key,
     s20_rev_littleendian(n+8, si / 64);
     // Expand the key with n and hash to produce a keystream block
     (*expand)(key, n, keystream);
-    s20_hash(keystream, rounds);
+    s20_hash(keystream, keystream, rounds);
   }
 
   // Walk over the plaintext byte-by-byte, xoring the keystream with
@@ -188,7 +218,93 @@ enum s20_status_t s20_crypt(uint8_t *key,
     if ((si + i) % 64 == 0) {
       s20_rev_littleendian(n+8, ((si + i) / 64));
       (*expand)(key, n, keystream);
-      s20_hash(keystream, rounds);
+      s20_hash(keystream, keystream, rounds);
+    }
+
+    // xor one byte of plaintext with one byte of keystream
+    buf[i] ^= keystream[(si + i) % 64];
+  }
+
+  return S20_SUCCESS;
+}
+
+
+// XSalsa20 algorithm
+// Performs up to 2^32-1 bytes of encryption or decryption under a
+// 128- or 256-bit key and 64-byte nonce.
+enum s20_status_t xs20_crypt(uint8_t *key,
+                             enum s20_keylen_t keylen,
+                             uint8_t nonce[static 24],
+                             uint32_t rounds,
+                             uint32_t si,
+                             uint8_t *buf,
+                             uint32_t buflen)
+{
+  uint8_t keystream[64];
+  // 'n' is a part of the nonce
+  uint8_t n[16];
+
+  uint8_t keyFromHSalsa[32];
+
+  uint32_t i;
+
+  // Pick an expansion function based on key size
+  void (*expand)(uint8_t *, uint8_t *, uint8_t *) = NULL;
+  if (keylen == S20_KEYLEN_256)
+    expand = s20_expand32;
+  if (keylen == S20_KEYLEN_128)
+    expand = s20_expand16;
+
+  // If any of the parameters we received are invalid
+  if (expand == NULL || key == NULL || nonce == NULL || buf == NULL)
+    return S20_FAILURE;
+
+  memcpy((void *) n, (void *) nonce, sizeof(uint8_t) * 16);
+
+  // If we're not on a block boundary, compute the first keystream
+  // block. This will make the primary loop (below) cleaner
+  if (si % 64 != 0) {
+    // Expand the key with n and hash to produce a keystream block
+    (*expand)(key, n, keystream);
+
+    // get key from hSalsa
+    hs20_hash(keystream, keyFromHSalsa, rounds);
+
+    // copy last 8 bytes of nonce into first 8 bytes of n
+    // fill rest 4 bytes of n with si/64
+    // leave highest 4 bytes 0
+    memcpy((void*) n, (void*) (nonce+17), sizeof(uint8_t) * 8);
+    s20_rev_littleendian(n+8, si / 64);
+
+    // use the key from HSalsa and n to make the final keystream
+    s20_expand32(keyFromHSalsa, n, keystream); // this can be optimized
+                                               // [Definition of XSalsa20] (http://cr.yp.to/snuffle/xsalsa-20081128.pdf)
+                                               // (x0', x5', x10', x15') remain the same
+                                               // But expand32 'changes' them too
+    s20_hash(keystream, keystream, rounds);
+  }
+
+  // Walk over the plaintext byte-by-byte, xoring the keystream with
+  // the plaintext and producing new keystream blocks as needed
+  for (i = 0; i < buflen; ++i) {
+    // If we've used up our entire keystream block (or have just begun
+    // and happen to be on a block boundary), produce keystream block
+    if ((si + i) % 64 == 0) {
+      // Expand the key with n and hash to produce a keystream block
+      (*expand)(key, n, keystream);
+
+      // get key from hSalsa
+      hs20_hash(keystream, keyFromHSalsa, rounds);
+
+      // copy last 8 bytes of nonce into first 8 bytes of n
+      // fill rest 4 bytes of n with si/64
+      // leave highest 4 bytes 0
+      memcpy((void*) n, (void*) (nonce+17), sizeof(uint8_t) * 8);
+      s20_rev_littleendian(n+8, si / 64);
+
+      // use the key from HSalsa and n to make the final keystream
+      s20_expand32(keyFromHSalsa, n, keystream);
+      s20_hash(keystream, keystream, rounds);
     }
 
     // xor one byte of plaintext with one byte of keystream

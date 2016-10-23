@@ -64,4 +64,16 @@ enum s20_status_t s20_crypt(uint8_t *key,
                             uint32_t si,
                             uint8_t *buf,
                             uint32_t buflen);
+
+/*
+ * XSalsa implementation. Only difference from Salsa20
+ * in terms of interface is that nonce is 192 bits
+ */
+enum s20_status_t xs20_crypt(uint8_t *key,
+                            enum s20_keylen_t keylen,
+                            uint8_t nonce[static 24],
+                            uint32_t rounds,
+                            uint32_t si,
+                            uint8_t *buf,
+                            uint32_t buflen);
 #endif
