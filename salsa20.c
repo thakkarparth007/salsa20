@@ -57,9 +57,10 @@ static void s20_rev_littleendian(uint8_t *b, uint32_t w)
 }
 
 // The core function of Salsa20
-static void s20_hash(uint8_t seq[static 64])
+static void s20_hash(uint8_t seq[static 64], int rounds)
 {
   int i;
+  int halfRounds = rounds/2;
   uint32_t x[16];
   uint32_t z[16];
 
@@ -69,7 +70,7 @@ static void s20_hash(uint8_t seq[static 64])
   for (i = 0; i < 16; ++i)
     x[i] = z[i] = s20_littleendian(seq + (4 * i));
 
-  for (i = 0; i < 10; ++i)
+  for (i = 0; i < halfRounds; ++i)
     s20_doubleround(z);
 
   for (i = 0; i < 16; ++i) {
@@ -104,8 +105,6 @@ static void s20_expand16(uint8_t *k,
     keystream[44+i] = k[i];
     keystream[24+i] = n[i];
   }
-
-  s20_hash(keystream);
 }
 
 
@@ -135,8 +134,6 @@ static void s20_expand32(uint8_t *k,
     keystream[44+i] = k[i+16];
     keystream[24+i] = n[i];
   }
-
-  s20_hash(keystream);
 }
 
 
@@ -145,6 +142,7 @@ static void s20_expand32(uint8_t *k,
 enum s20_status_t s20_crypt(uint8_t *key,
                             enum s20_keylen_t keylen,
                             uint8_t nonce[static 8],
+                            uint32_t rounds,
                             uint32_t si,
                             uint8_t *buf,
                             uint32_t buflen)
@@ -179,6 +177,7 @@ enum s20_status_t s20_crypt(uint8_t *key,
     s20_rev_littleendian(n+8, si / 64);
     // Expand the key with n and hash to produce a keystream block
     (*expand)(key, n, keystream);
+    s20_hash(keystream, rounds);
   }
 
   // Walk over the plaintext byte-by-byte, xoring the keystream with
@@ -189,6 +188,7 @@ enum s20_status_t s20_crypt(uint8_t *key,
     if ((si + i) % 64 == 0) {
       s20_rev_littleendian(n+8, ((si + i) / 64));
       (*expand)(key, n, keystream);
+      s20_hash(keystream, rounds);
     }
 
     // xor one byte of plaintext with one byte of keystream
