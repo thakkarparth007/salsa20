@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
 
     crypt_function = s20_crypt;
   }
-  if (!strcmp(argv[1], "xsalsa")) {
+  else if (!strcmp(argv[1], "xsalsa")) {
     if (strlen(argv[3]) != 24) {
       puts("nonce must be 24 character long (192 bits) for XSalsa20");
       return 1;
